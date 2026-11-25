@@ -80,6 +80,9 @@
     .modal h3 { margin: 0 0 12px; font-size: 18px; }
     .toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); background: #10b981; color: #fff; padding: 10px 16px; border-radius: 99px; font-size: 13px; font-weight: 600; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
     .empty { text-align: center; padding: 28px 14px; color: var(--muted); font-size: 14px; }
+
+    .bar-bg { background: var(--bg); height: 8px; border-radius: 99px; overflow: hidden; margin-top: 6px; }
+    .bar-fill { background: var(--primary); height: 100%; border-radius: 99px; }
   </style>
 </head>
 <body>
@@ -122,6 +125,7 @@
       <button class="nav-item active" data-tab="dashboard"><span class="nav-ico">📊</span>Přehled</button>
       <button class="nav-item" data-tab="service"><span class="nav-ico">🔧</span>Servis</button>
       <button class="nav-item" data-tab="fuel"><span class="nav-ico">⛽</span>Tankování</button>
+      <button class="nav-item" data-tab="expenses"><span class="nav-ico">💰</span>Výdaje</button>
       <button class="nav-item" data-tab="tech"><span class="nav-ico">📄</span>Techničák</button>
     </nav>
   </div>
