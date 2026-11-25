@@ -3,11 +3,21 @@ const SUPABASE_ANON_KEY = 'sb_publishable_ONTmaq5lpo-fjChiIx0fUQ_j6RKNtHT';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+const CAT_LABELS = {
+  fuel: '⛽ Palivo',
+  service: '🔧 Servis & opravy',
+  stk: '📋 STK & emise',
+  insurance: '🛡️ Pojištění & známky',
+  tires: '🛞 Pneumatiky & pneuservis',
+  other: '🧼 Mytí & ostatní'
+};
+
 const state = {
   vehicles: [],
   vehicleId: localStorage.getItem('garaz_veh_id') || null,
   tab: 'dashboard',
   serviceSubtab: 'rules',
+  expensePeriod: 'year',
   rules: [],
   services: [],
   fuels: [],
@@ -20,6 +30,15 @@ const $ = (id) => document.getElementById(id);
 const fmtNum = (n) => (n == null || isNaN(n) ? '–' : Number(n).toLocaleString('cs-CZ'));
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('cs-CZ') : '–');
 const todayStr = () => new Date().toISOString().split('T')[0];
+
+function netCost(gross, vatDeducted) {
+  const val = Number(gross || 0);
+  return vatDeducted ? val / 1.21 : val;
+}
+
+function serviceGross(s) {
+  return Number(s.cost_parts || 0) + Number(s.cost_labor || 0);
+}
 
 function toast(msg, isErr = false) {
   const el = $('toast');
@@ -228,7 +247,7 @@ $('fab-btn').addEventListener('click', () => {
     <h3>Rychlý zápis</h3>
     <div style="display:grid; gap:10px;">
       <button class="btn" onclick="openFuelModal()">⛽ Zapsat tankování</button>
-      <button class="btn btn-sec" onclick="openServiceModal()">🔧 Zapsat servis / opravu</button>
+      <button class="btn btn-sec" onclick="openServiceModal()">🔧 Zapsat servis / STK / výdaj</button>
       <button class="btn btn-sec" onclick="openRuleModal()">📅 Přidat hlídaný interval (STK, olej...)</button>
       <button class="btn btn-sec" onclick="openIssueModal()">📝 Závada do backlogu</button>
     </div>
@@ -252,6 +271,7 @@ function renderTab() {
   if (state.tab === 'dashboard') renderDashboard();
   if (state.tab === 'service') renderService();
   if (state.tab === 'fuel') renderFuel();
+  if (state.tab === 'expenses') renderExpenses();
   if (state.tab === 'tech') renderTech();
 }
 
@@ -259,10 +279,10 @@ function renderTab() {
 function renderDashboard() {
   const v = currentVehicle();
   const { avg } = calcFuelStats();
-  const year = new Date().getFullYear();
-  const yearFuel = state.fuels.filter((f) => f.date?.startsWith(year)).reduce((s, f) => s + Number(f.total_cost || 0), 0);
-  const yearServ = state.services.filter((s) => s.date?.startsWith(year)).reduce((sum, s) => sum + Number(s.cost_parts || 0) + Number(s.cost_labor || 0), 0);
-  const totalCost = state.fuels.reduce((s, f) => s + Number(f.total_cost || 0), 0) + state.services.reduce((sum, s) => sum + Number(s.cost_parts || 0) + Number(s.cost_labor || 0), 0);
+  const year = String(new Date().getFullYear());
+  const yearFuel = state.fuels.filter((f) => f.date?.startsWith(year)).reduce((s, f) => s + netCost(f.total_cost, f.vat_deducted), 0);
+  const yearServ = state.services.filter((s) => s.date?.startsWith(year)).reduce((sum, s) => sum + netCost(serviceGross(s), s.vat_deducted), 0);
+  const totalCost = state.fuels.reduce((s, f) => s + netCost(f.total_cost, f.vat_deducted), 0) + state.services.reduce((sum, s) => sum + netCost(serviceGross(s), s.vat_deducted), 0);
   const odos = [...state.fuels.map((f) => f.odometer), ...state.services.map((s) => s.odometer)].filter(Boolean);
   const trackedKm = odos.length > 1 ? Math.max(...odos) - Math.min(...odos) : 0;
   const tco = trackedKm > 50 ? (totalCost / trackedKm).toFixed(2) + ' Kč' : '–';
@@ -276,7 +296,7 @@ function renderDashboard() {
   $('content').innerHTML = `
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">Průměrná spotřeba</div><div class="kpi-val">${avg ? avg.toFixed(2) + ' l' : '–'}</div></div>
-      <div class="kpi"><div class="kpi-label">Náklady ${year}</div><div class="kpi-val">${fmtNum(Math.round(yearFuel + yearServ))} Kč</div></div>
+      <div class="kpi"><div class="kpi-label">Náklady ${year} (čisté)</div><div class="kpi-val">${fmtNum(Math.round(yearFuel + yearServ))} Kč</div></div>
       <div class="kpi"><div class="kpi-label">Cena za 1 km (TCO)</div><div class="kpi-val">${tco}</div></div>
       <div class="kpi"><div class="kpi-label">Otevřené závady</div><div class="kpi-val">${openIssues}</div></div>
     </div>
@@ -321,17 +341,22 @@ function renderService() {
     body = `<button class="btn btn-block" style="margin-bottom:12px" onclick="openRuleModal()">➕ Přidat interval</button>` +
       (list.length ? list.map(({ r, ev }) => renderRuleCard(r, ev)).join('') : '<div class="card empty">Žádné intervaly.</div>');
   } else if (sub === 'logs') {
-    body = `<button class="btn btn-block" style="margin-bottom:12px" onclick="openServiceModal()">➕ Přidat servisní záznam</button>` +
+    body = `<button class="btn btn-block" style="margin-bottom:12px" onclick="openServiceModal()">➕ Přidat servis / STK / výdaj</button>` +
       (state.services.length ? state.services.map((s) => {
-        const sum = Number(s.cost_parts || 0) + Number(s.cost_labor || 0);
+        const gross = serviceGross(s);
+        const net = netCost(gross, s.vat_deducted);
+        const cat = CAT_LABELS[s.category || 'service'] || CAT_LABELS.service;
         return `
           <div class="card">
             <div class="row-wrap">
               <div>
                 <strong>${s.title}</strong>
-                <div class="subtext">${fmtDate(s.date)} ${s.odometer ? '• ' + fmtNum(s.odometer) + ' km' : ''} ${s.workshop_name ? '• ' + s.workshop_name : ''}</div>
+                <div class="subtext">${cat} • ${fmtDate(s.date)} ${s.odometer ? '• ' + fmtNum(s.odometer) + ' km' : ''} ${s.workshop_name ? '• ' + s.workshop_name : ''}</div>
               </div>
-              <strong>${fmtNum(sum)} Kč</strong>
+              <div style="text-align:right">
+                <strong>${fmtNum(Math.round(net))} Kč</strong>
+                ${s.vat_deducted ? `<div class="subtext" style="color:#6ee7b7">-DPH (z ${fmtNum(Math.round(gross))})</div>` : ''}
+              </div>
             </div>
             ${s.description ? `<div class="subtext" style="margin-top:8px; color:var(--text)">${s.description}</div>` : ''}
             ${s.parts_used ? `<div class="subtext">Díly: ${s.parts_used}</div>` : ''}
@@ -376,17 +401,19 @@ window.setServiceSub = (s) => { state.serviceSubtab = s; renderService(); };
 // ================= TAB 3: FUEL =================
 function renderFuel() {
   const { avg, perLog } = calcFuelStats();
-  const sumFuel = state.fuels.reduce((s, f) => s + Number(f.total_cost || 0), 0);
-  const sumServ = state.services.reduce((s, x) => s + Number(x.cost_parts || 0) + Number(x.cost_labor || 0), 0);
+  const sumFuelNet = state.fuels.reduce((s, f) => s + netCost(f.total_cost, f.vat_deducted), 0);
+  const sumVatSaved = state.fuels.reduce((s, f) => s + (f.vat_deducted ? Number(f.total_cost) - netCost(f.total_cost, true) : 0), 0);
 
   $('content').innerHTML = `
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">Průměrná spotřeba</div><div class="kpi-val">${avg ? avg.toFixed(2) + ' l/100' : '–'}</div></div>
-      <div class="kpi"><div class="kpi-label">Palivo / Servis celkem</div><div class="kpi-val" style="font-size:15px">${fmtNum(Math.round(sumFuel))} / ${fmtNum(Math.round(sumServ))} Kč</div></div>
+      <div class="kpi"><div class="kpi-label">Palivo čisté (-DPH)</div><div class="kpi-val">${fmtNum(Math.round(sumFuelNet))} Kč</div><div class="subtext">Vráceno DPH: ${fmtNum(Math.round(sumVatSaved))} Kč</div></div>
     </div>
     <button class="btn btn-block" style="margin-bottom:14px" onclick="openFuelModal()">⛽ Zapsat tankování</button>
     <h2>Historie tankování</h2>
-    ${state.fuels.length ? state.fuels.map((f) => `
+    ${state.fuels.length ? state.fuels.map((f) => {
+      const net = netCost(f.total_cost, f.vat_deducted);
+      return `
       <div class="card">
         <div class="row-wrap">
           <div>
@@ -394,19 +421,93 @@ function renderFuel() {
             <div class="subtext">${f.liters} l (${f.price_per_liter ? f.price_per_liter + ' Kč/l' : ''}) ${f.station_name ? '• ' + f.station_name : ''} ${f.is_full_tank ? '• Plná' : '• Částečná'}</div>
           </div>
           <div style="text-align:right">
-            <strong>${fmtNum(f.total_cost)} Kč</strong>
-            ${perLog[f.id] ? `<div class="subtext" style="color:#6ee7b7; font-weight:600">${perLog[f.id].toFixed(2)} l/100</div>` : ''}
+            <strong>${fmtNum(Math.round(net))} Kč</strong>
+            ${f.vat_deducted ? `<div class="subtext" style="color:#6ee7b7">-DPH (z ${fmtNum(Math.round(f.total_cost))})</div>` : ''}
+            ${perLog[f.id] ? `<div class="subtext" style="color:#93c5fd; font-weight:600">${perLog[f.id].toFixed(2)} l/100</div>` : ''}
           </div>
         </div>
         <div style="text-align:right; margin-top:8px;">
           <button class="btn btn-sm btn-danger" onclick="deleteItem('car_fuel_logs','${f.id}')">Smazat</button>
         </div>
       </div>
-    `).join('') : '<div class="card empty">Zatím žádné tankování.</div>'}
+    `;
+    }).join('') : '<div class="card empty">Zatím žádné tankování.</div>'}
   `;
 }
 
-// ================= TAB 4: TECH & DOCS =================
+// ================= TAB 4: EXPENSES =================
+function renderExpenses() {
+  const year = String(new Date().getFullYear());
+  const isYear = state.expensePeriod === 'year';
+  const fuels = isYear ? state.fuels.filter((f) => f.date?.startsWith(year)) : state.fuels;
+  const servs = isYear ? state.services.filter((s) => s.date?.startsWith(year)) : state.services;
+
+  const cats = { fuel: 0, service: 0, stk: 0, insurance: 0, tires: 0, other: 0 };
+  let totalGross = 0;
+  let totalNet = 0;
+
+  fuels.forEach((f) => {
+    const g = Number(f.total_cost || 0);
+    const n = netCost(g, f.vat_deducted);
+    cats.fuel += n;
+    totalGross += g;
+    totalNet += n;
+  });
+
+  servs.forEach((s) => {
+    const g = serviceGross(s);
+    const n = netCost(g, s.vat_deducted);
+    const key = cats.hasOwnProperty(s.category) ? s.category : 'service';
+    cats[key] += n;
+    totalGross += g;
+    totalNet += n;
+  });
+
+  const vatSaved = totalGross - totalNet;
+  const rows = Object.entries(cats)
+    .filter(([, val]) => val > 0)
+    .sort((a, b) => b[1] - a[1]);
+
+  $('content').innerHTML = `
+    <div class="subtabs">
+      <button class="subtab ${isYear ? 'active' : ''}" onclick="setExpPeriod('year')">Rok ${year}</button>
+      <button class="subtab ${!isYear ? 'active' : ''}" onclick="setExpPeriod('all')">Celkem</button>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-label">Výdaje celkem (čisté)</div>
+        <div class="kpi-val">${fmtNum(Math.round(totalNet))} Kč</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Ušetřeno na DPH</div>
+        <div class="kpi-val" style="color:#6ee7b7">${fmtNum(Math.round(vatSaved))} Kč</div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-bottom:12px">
+      <h2 style="margin:0">Rozdělení podle kategorií</h2>
+      <button class="btn btn-sm" onclick="openServiceModal()">➕ Přidat výdaj</button>
+    </div>
+
+    ${rows.length ? `<div class="card">${rows.map(([k, val]) => {
+      const pct = totalNet > 0 ? Math.round((val / totalNet) * 100) : 0;
+      return `
+        <div style="margin-bottom:14px;">
+          <div class="row">
+            <strong>${CAT_LABELS[k]}</strong>
+            <span><strong>${fmtNum(Math.round(val))} Kč</strong> <span class="subtext">(${pct} %)</span></span>
+          </div>
+          <div class="bar-bg"><div class="bar-fill" style="width:${pct}%"></div></div>
+        </div>
+      `;
+    }).join('')}</div>` : '<div class="card empty">V tomto období zatím nemáš žádné výdaje.</div>'}
+  `;
+}
+
+window.setExpPeriod = (p) => { state.expensePeriod = p; renderExpenses(); };
+
+// ================= TAB 5: TECH & DOCS =================
 function renderTech() {
   const v = currentVehicle();
   const sp = v.specs || {};
@@ -574,19 +675,31 @@ window.completeRule = (ruleId) => {
 
 window.openServiceModal = (rule = null) => {
   const v = currentVehicle();
+  const defCat = rule ? (rule.category === 'legal' ? 'stk' : rule.category === 'insurance' ? 'insurance' : 'service') : 'service';
   openModal(`
-    <h3>${rule ? 'Splnit: ' + rule.title : 'Nový servisní záznam'}</h3>
+    <h3>${rule ? 'Splnit: ' + rule.title : 'Nový servis / STK / výdaj'}</h3>
     <form id="serv-form">
-      <label>Název úkonu</label><input id="s-title" required value="${rule ? rule.title : ''}" />
+      <label>Název úkonu</label><input id="s-title" required value="${rule ? rule.title : ''}" placeholder="např. STK + emise, Výměna oleje..." />
+      <label>Kategorie výdaje</label>
+      <select id="s-cat">
+        <option value="service" ${defCat === 'service' ? 'selected' : ''}>🔧 Servis & opravy</option>
+        <option value="stk" ${defCat === 'stk' ? 'selected' : ''}>📋 STK & emise</option>
+        <option value="insurance" ${defCat === 'insurance' ? 'selected' : ''}>🛡️ Pojištění & známky</option>
+        <option value="tires" ${defCat === 'tires' ? 'selected' : ''}>🛞 Pneumatiky & pneuservis</option>
+        <option value="other" ${defCat === 'other' ? 'selected' : ''}>🧼 Mytí & ostatní</option>
+      </select>
       <div class="grid-2">
         <div><label>Datum</label><input type="date" id="s-date" required value="${todayStr()}" /></div>
         <div><label>Tachometr (km)</label><input type="number" id="s-odo" value="${v.current_odometer || ''}" /></div>
       </div>
       <div class="grid-2">
-        <div><label>Cena dílů (Kč)</label><input type="number" id="s-parts" value="0" /></div>
-        <div><label>Cena práce (Kč)</label><input type="number" id="s-labor" value="0" /></div>
+        <div><label>Cena dílů / poplatek (Kč)</label><input type="number" step="0.01" id="s-parts" value="0" /></div>
+        <div><label>Cena práce (Kč)</label><input type="number" step="0.01" id="s-labor" value="0" /></div>
       </div>
-      <label>Servis / mechanik</label><input id="s-shop" />
+      <label style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+        <input type="checkbox" id="s-vat" style="width:auto" /> Odečíst DPH (21 %)
+      </label>
+      <label>Servis / stanice STK</label><input id="s-shop" />
       <label>Použité díly</label><input id="s-used" placeholder="např. Castrol 5W-30, filtr Mann" />
       <label>Poznámka</label><textarea id="s-desc"></textarea>
       <label>Faktura / účtenka (foto nebo PDF)</label><input type="file" id="s-file" accept="image/*,.pdf" />
@@ -608,10 +721,12 @@ window.openServiceModal = (rule = null) => {
       vehicle_id: state.vehicleId,
       rule_id: rule ? rule.id : null,
       title: $('s-title').value.trim(),
+      category: $('s-cat').value,
       date: dateVal,
       odometer: odoVal,
       cost_parts: parseFloat($('s-parts').value) || 0,
       cost_labor: parseFloat($('s-labor').value) || 0,
+      vat_deducted: $('s-vat').checked,
       workshop_name: $('s-shop').value.trim(),
       parts_used: $('s-used').value.trim(),
       description: $('s-desc').value.trim(),
@@ -630,7 +745,7 @@ window.openServiceModal = (rule = null) => {
       await sb.from('car_maintenance_rules').update(upd).eq('id', rule.id);
     }
     closeModal();
-    toast('Servis uložen');
+    toast('Záznam uložen');
     await loadVehicles();
   };
 };
@@ -646,11 +761,14 @@ window.openFuelModal = () => {
       </div>
       <div class="grid-2">
         <div><label>Litry</label><input type="number" step="0.01" id="f-lit" required /></div>
-        <div><label>Celková cena (Kč)</label><input type="number" step="0.01" id="f-cost" required /></div>
+        <div><label>Celková cena s DPH (Kč)</label><input type="number" step="0.01" id="f-cost" required /></div>
       </div>
       <label>Čerpací stanice</label><input id="f-st" placeholder="např. Benzina, EuroOil" />
       <label style="display:flex; align-items:center; gap:8px; margin-top:12px;">
         <input type="checkbox" id="f-full" checked style="width:auto" /> Plná nádrž (pro výpočet spotřeby)
+      </label>
+      <label style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+        <input type="checkbox" id="f-vat" style="width:auto" /> Odečíst DPH (21 %)
       </label>
       <button class="btn btn-block" style="margin-top:14px">Uložit tankování</button>
     </form>
@@ -667,7 +785,8 @@ window.openFuelModal = () => {
       total_cost: cost,
       price_per_liter: lit > 0 ? +(cost / lit).toFixed(2) : null,
       station_name: $('f-st').value.trim(),
-      is_full_tank: $('f-full').checked
+      is_full_tank: $('f-full').checked,
+      vat_deducted: $('f-vat').checked
     });
     if (error) return toast(error.message, true);
     closeModal();
